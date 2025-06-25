@@ -13,9 +13,13 @@ yarn-error.log*
 
 # 생성된 지갑 파일들 (보안상 중요!)
 wallets/
-*.json
+wallets/*.json
 *.key
 *.wallet
+
+# package.json과 package-lock.json은 포함
+!package.json
+!package-lock.json
 
 # OS 파일들
 .DS_Store
