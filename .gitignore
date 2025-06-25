@@ -1,0 +1,61 @@
+# Node.js 의존성
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 환경 변수 파일
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 생성된 지갑 파일들 (보안상 중요!)
+wallets/
+*.json
+*.key
+*.wallet
+
+# OS 파일들
+.DS_Store
+Thumbs.db
+
+# IDE/Editor 파일들
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 로그 파일들
+*.log
+logs/
+
+# 빌드 결과물
+dist/
+build/
+out/
+
+# 임시 파일들
+tmp/
+temp/
+.tmp/
+
+# Coverage 리포트
+coverage/
+.nyc_output/
+
+# 런타임 데이터
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# 캐시 디렉토리
+.cache/
+.parcel-cache/
+
+# 백업 파일들
+*.backup
+*.bak 
