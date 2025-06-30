@@ -67,6 +67,40 @@ export function containsPattern(address, pattern, caseSensitive = true) {
 }
 
 /**
+ * 주소가 지정된 패턴으로 시작하고 끝나는지 확인합니다
+ * @param {string} address - 검사할 주소
+ * @param {string} startPattern - 시작 패턴 (빈 문자열이면 시작 패턴 무시)
+ * @param {string} endPattern - 끝 패턴 (빈 문자열이면 끝 패턴 무시)
+ * @param {boolean} caseSensitive - 대소문자 구분 여부 (기본: true)
+ * @returns {boolean} 패턴 일치 여부
+ */
+export function matchesStartEndPattern(address, startPattern, endPattern, caseSensitive = true) {
+    // 빈 패턴 처리
+    const hasStartPattern = startPattern && startPattern.trim().length > 0;
+    const hasEndPattern = endPattern && endPattern.trim().length > 0;
+    
+    if (!hasStartPattern && !hasEndPattern) {
+        return true; // 둘 다 빈 패턴이면 모든 주소가 매치
+    }
+    
+    if (!caseSensitive) {
+        const lowerAddress = address.toLowerCase();
+        const lowerStart = hasStartPattern ? startPattern.toLowerCase() : '';
+        const lowerEnd = hasEndPattern ? endPattern.toLowerCase() : '';
+        
+        const startMatch = !hasStartPattern || lowerAddress.startsWith(lowerStart);
+        const endMatch = !hasEndPattern || lowerAddress.endsWith(lowerEnd);
+        
+        return startMatch && endMatch;
+    }
+    
+    const startMatch = !hasStartPattern || address.startsWith(startPattern);
+    const endMatch = !hasEndPattern || address.endsWith(endPattern);
+    
+    return startMatch && endMatch;
+}
+
+/**
  * 지정된 패턴으로 시작하는 vanity 주소를 생성합니다
  * @param {string} pattern - 찾을 패턴
  * @param {boolean} caseSensitive - 대소문자 구분 여부 (기본: true)
@@ -128,6 +162,62 @@ export function generateVanityWalletContains(pattern, caseSensitive = true, prog
             progressCallback(attempts);
         }
     } while (!containsPattern(address, pattern, caseSensitive));
+
+    return {
+        address: address,
+        privateKey: getPrivateKeyFromKeypair(keypair),
+        publicKey: keypair.publicKey.toBase58(),
+        attempts: attempts,
+        keypair: keypair
+    };
+}
+
+/**
+ * 지정된 시작과 끝 패턴을 가진 vanity 주소를 생성합니다
+ * @param {string} startPattern - 시작 패턴
+ * @param {string} endPattern - 끝 패턴
+ * @param {boolean} caseSensitive - 대소문자 구분 여부 (기본: true)
+ * @param {Function} progressCallback - 진행 상황 콜백 함수
+ * @returns {Object} 생성된 지갑 정보 {address, privateKey, publicKey, attempts}
+ */
+export function generateVanityWalletStartEnd(startPattern, endPattern, caseSensitive = true, progressCallback = null) {
+    let attempts = 0;
+    let keypair;
+    let address;
+
+    // 빈 패턴 처리
+    const hasStartPattern = startPattern && startPattern.trim().length > 0;
+    const hasEndPattern = endPattern && endPattern.trim().length > 0;
+    
+    // 둘 다 빈 패턴이면 에러
+    if (!hasStartPattern && !hasEndPattern) {
+        throw new Error('시작 패턴 또는 끝 패턴 중 최소 하나는 입력해야 합니다.');
+    }
+
+    // 패턴 유효성 검사 (빈 패턴이 아닌 경우에만)
+    if (hasStartPattern && !isValidPattern(startPattern)) {
+        throw new Error('유효하지 않은 시작 패턴입니다. Base58 문자만 사용할 수 있습니다.');
+    }
+    if (hasEndPattern && !isValidPattern(endPattern)) {
+        throw new Error('유효하지 않은 끝 패턴입니다. Base58 문자만 사용할 수 있습니다.');
+    }
+
+    // 패턴 길이 검사 (솔라나 주소는 44자이므로 시작+끝 패턴이 44자를 초과하면 안됨)
+    const startLength = hasStartPattern ? startPattern.length : 0;
+    const endLength = hasEndPattern ? endPattern.length : 0;
+    if (startLength + endLength >= 44) {
+        throw new Error('시작 패턴과 끝 패턴의 총 길이가 너무 깁니다. 합쳐서 43자 이하여야 합니다.');
+    }
+
+    do {
+        keypair = generateKeypair();
+        address = getAddressFromKeypair(keypair);
+        attempts++;
+
+        if (progressCallback && attempts % 10000 === 0) {
+            progressCallback(attempts);
+        }
+    } while (!matchesStartEndPattern(address, startPattern, endPattern, caseSensitive));
 
     return {
         address: address,
@@ -255,6 +345,111 @@ export async function generateVanityWalletContainsMultiWorker(pattern, workerCou
                         caseSensitive,
                         workerId: i + 1,
                         searchMode: 'contains' // 새로운 모드 추가
+                    }
+                });
+
+                worker.on('message', (message) => {
+                    if (resolved) return;
+
+                    if (message.success) {
+                        resolved = true;
+                        message.totalAttempts = totalAttempts + message.attempts;
+                        
+                        console.log(`🎉 워커 ${message.workerId}가 해답을 찾았습니다!`);
+                        
+                        // 모든 워커 종료
+                        workers.forEach(w => w.terminate());
+                        resolve(message);
+                    } else if (message.progress) {
+                        totalAttempts += 10000;
+                        if (progressCallback) {
+                            progressCallback(totalAttempts);
+                        }
+                    }
+                });
+
+                worker.on('error', (error) => {
+                    console.error(`❌ 워커 ${i + 1} 오류:`, error.message);
+                    if (!resolved) {
+                        reject(error);
+                    }
+                });
+
+                workers.push(worker);
+            } catch (error) {
+                console.error(`❌ 워커 ${i + 1} 생성 실패:`, error.message);
+                reject(error);
+                return;
+            }
+        }
+    });
+}
+
+/**
+ * 멀티 워커를 사용하여 시작과 끝 패턴을 가진 vanity 주소를 생성합니다
+ * @param {string} startPattern - 시작 패턴
+ * @param {string} endPattern - 끝 패턴
+ * @param {number} workerCount - 워커 스레드 수 (기본: CPU 코어 수)
+ * @param {boolean} caseSensitive - 대소문자 구분 여부 (기본: true)
+ * @param {Function} progressCallback - 진행 상황 콜백 함수
+ * @returns {Promise<Object>} 생성된 지갑 정보
+ */
+export async function generateVanityWalletStartEndMultiWorker(startPattern, endPattern, workerCount = null, caseSensitive = true, progressCallback = null) {
+    const { Worker } = await import('worker_threads');
+    const os = await import('os');
+    const path = await import('path');
+    const { fileURLToPath } = await import('url');
+    
+    // 빈 패턴 처리
+    const hasStartPattern = startPattern && startPattern.trim().length > 0;
+    const hasEndPattern = endPattern && endPattern.trim().length > 0;
+    
+    // 둘 다 빈 패턴이면 에러
+    if (!hasStartPattern && !hasEndPattern) {
+        throw new Error('시작 패턴 또는 끝 패턴 중 최소 하나는 입력해야 합니다.');
+    }
+    
+    // 패턴 유효성 검사 (빈 패턴이 아닌 경우에만)
+    if (hasStartPattern && !isValidPattern(startPattern)) {
+        throw new Error('유효하지 않은 시작 패턴입니다. Base58 문자만 사용할 수 있습니다.');
+    }
+    if (hasEndPattern && !isValidPattern(endPattern)) {
+        throw new Error('유효하지 않은 끝 패턴입니다. Base58 문자만 사용할 수 있습니다.');
+    }
+    
+    // 패턴 길이 검사
+    const startLength = hasStartPattern ? startPattern.length : 0;
+    const endLength = hasEndPattern ? endPattern.length : 0;
+    if (startLength + endLength >= 44) {
+        throw new Error('시작 패턴과 끝 패턴의 총 길이가 너무 깁니다. 합쳐서 43자 이하여야 합니다.');
+    }
+
+    return new Promise((resolve, reject) => {
+        const numWorkers = workerCount || os.cpus().length;
+        const workers = [];
+        let totalAttempts = 0;
+        let resolved = false;
+
+        // 현재 디렉토리 경로 계산
+        const __dirname = path.dirname(fileURLToPath(import.meta.url));
+        const workerPath = path.join(__dirname, 'worker.js');
+
+        const patternDescription = hasStartPattern && hasEndPattern 
+            ? `${startPattern}...${endPattern}`
+            : hasStartPattern 
+                ? `${startPattern}로 시작`
+                : `${endPattern}로 끝남`;
+        console.log(`🚀 ${numWorkers}개 워커로 병렬 생성 시작... (앞뒤 패턴: ${patternDescription})`);
+
+        for (let i = 0; i < numWorkers; i++) {
+            try {
+                const worker = new Worker(workerPath, {
+                    workerData: { 
+                        startPattern,
+                        endPattern,
+                        caseSensitive,
+                        workerId: i + 1,
+                        searchMode: 'startEnd' // 새로운 모드 추가
                     }
                 });
 

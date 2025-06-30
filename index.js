@@ -14,6 +14,8 @@ import {
     generateVanityWalletMultiWorker,
     generateVanityWalletContains,
     generateVanityWalletContainsMultiWorker,
+    generateVanityWalletStartEnd,
+    generateVanityWalletStartEndMultiWorker,
     isValidPattern,
     estimateAttempts,
     formatWalletInfo,
@@ -101,35 +103,101 @@ class VanityWalletGenerator {
                     {
                         name: '🔍 포함 패턴 (주소 내 어디든 패턴 포함) - 예: ABC가 어디든 포함된 주소',
                         value: 'contains'
+                    },
+                    {
+                        name: '🎯🎯 앞뒤 패턴 (주소가 앞패턴으로 시작하고 뒤패턴으로 끝남) - 예: ABC로 시작하고 XYZ로 끝나는 주소',
+                        value: 'startEnd'
                     }
                 ]
             }
         ]);
 
         // 패턴 입력
-        const patternMessage = searchMode === 'startsWith' 
-            ? '원하는 주소 시작 패턴을 입력하세요 (예: ABC, 123, Sol):'
-            : '주소 내 포함될 패턴을 입력하세요 (예: ABC, 123, Sol):';
-
-        const { pattern } = await inquirer.prompt([
-            {
-                type: 'input',
-                name: 'pattern',
-                message: patternMessage,
-                validate: (input) => {
-                    if (!input || input.length === 0) {
-                        return '패턴을 입력해주세요.';
+        let pattern, startPattern, endPattern;
+        
+        if (searchMode === 'startEnd') {
+            // 앞뒤 패턴 입력
+            const patterns = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'startPattern',
+                    message: '시작 패턴을 입력하세요 (빈칸=무시, 예: ABC, Sol):',
+                    validate: (input) => {
+                        // 빈 입력 허용
+                        if (!input || input.trim().length === 0) {
+                            return true;
+                        }
+                        if (input.length > 8) {
+                            return '패턴이 너무 깁니다. 8자 이하로 입력해주세요.';
+                        }
+                        if (!isValidPattern(input)) {
+                            return '유효하지 않은 패턴입니다. Base58 문자(1-9, A-H, J-N, P-Z, a-k, m-z)만 사용 가능합니다.';
+                        }
+                        return true;
                     }
-                    if (input.length > 8) {
-                        return '패턴이 너무 깁니다. 8자 이하로 입력해주세요.';
+                },
+                {
+                    type: 'input',
+                    name: 'endPattern',
+                    message: '끝 패턴을 입력하세요 (빈칸=무시, 예: XYZ, 123):',
+                    validate: (input) => {
+                        // 빈 입력 허용
+                        if (!input || input.trim().length === 0) {
+                            return true;
+                        }
+                        if (input.length > 8) {
+                            return '패턴이 너무 깁니다. 8자 이하로 입력해주세요.';
+                        }
+                        if (!isValidPattern(input)) {
+                            return '유효하지 않은 패턴입니다. Base58 문자(1-9, A-H, J-N, P-Z, a-k, m-z)만 사용 가능합니다.';
+                        }
+                        return true;
                     }
-                    if (!isValidPattern(input)) {
-                        return '유효하지 않은 패턴입니다. Base58 문자(1-9, A-H, J-N, P-Z, a-k, m-z)만 사용 가능합니다.';
-                    }
-                    return true;
                 }
+            ]);
+            
+            startPattern = patterns.startPattern.trim();
+            endPattern = patterns.endPattern.trim();
+            
+            // 빈 패턴 검사
+            if (!startPattern && !endPattern) {
+                console.log(chalk.red('❌ 시작 패턴 또는 끝 패턴 중 최소 하나는 입력해야 합니다.'));
+                return;
             }
-        ]);
+            
+            // 패턴 길이 검사
+            if (startPattern.length + endPattern.length >= 44) {
+                console.log(chalk.red('❌ 시작 패턴과 끝 패턴의 총 길이가 너무 깁니다. 합쳐서 43자 이하여야 합니다.'));
+                return;
+            }
+        } else {
+            // 단일 패턴 입력
+            const patternMessage = searchMode === 'startsWith' 
+                ? '원하는 주소 시작 패턴을 입력하세요 (예: ABC, 123, Sol):'
+                : '주소 내 포함될 패턴을 입력하세요 (예: ABC, 123, Sol):';
+
+            const result = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'pattern',
+                    message: patternMessage,
+                    validate: (input) => {
+                        if (!input || input.length === 0) {
+                            return '패턴을 입력해주세요.';
+                        }
+                        if (input.length > 8) {
+                            return '패턴이 너무 깁니다. 8자 이하로 입력해주세요.';
+                        }
+                        if (!isValidPattern(input)) {
+                            return '유효하지 않은 패턴입니다. Base58 문자(1-9, A-H, J-N, P-Z, a-k, m-z)만 사용 가능합니다.';
+                        }
+                        return true;
+                    }
+                }
+            ]);
+            
+            pattern = result.pattern;
+        }
 
         // 추가 옵션
         const options = await inquirer.prompt([
@@ -148,11 +216,32 @@ class VanityWalletGenerator {
         ]);
 
         // 예상 시도 횟수 표시
-        const estimatedAttempts = searchMode === 'contains' 
-            ? Math.floor(estimateAttempts(pattern, options.caseSensitive) / (44 - pattern.length + 1)) // 포함 패턴은 더 쉬움
-            : estimateAttempts(pattern, options.caseSensitive);
+        let estimatedAttempts;
+        let modeDescription;
         
-        console.log(chalk.yellow(`\n📊 검색 모드: ${searchMode === 'startsWith' ? '시작 패턴' : '포함 패턴'}`));
+        if (searchMode === 'startEnd') {
+            const hasStartPattern = startPattern && startPattern.length > 0;
+            const hasEndPattern = endPattern && endPattern.length > 0;
+            
+            if (hasStartPattern && hasEndPattern) {
+                estimatedAttempts = estimateAttempts(startPattern, options.caseSensitive) * estimateAttempts(endPattern, options.caseSensitive);
+                modeDescription = `앞뒤 패턴 (${startPattern}...${endPattern})`;
+            } else if (hasStartPattern) {
+                estimatedAttempts = estimateAttempts(startPattern, options.caseSensitive);
+                modeDescription = `시작 패턴 (${startPattern})`;
+            } else {
+                estimatedAttempts = estimateAttempts(endPattern, options.caseSensitive);
+                modeDescription = `끝 패턴 (...${endPattern})`;
+            }
+        } else if (searchMode === 'contains') {
+            estimatedAttempts = Math.floor(estimateAttempts(pattern, options.caseSensitive) / (44 - pattern.length + 1)); // 포함 패턴은 더 쉬움
+            modeDescription = `포함 패턴 (${pattern})`;
+        } else {
+            estimatedAttempts = estimateAttempts(pattern, options.caseSensitive);
+            modeDescription = `시작 패턴 (${pattern})`;
+        }
+        
+        console.log(chalk.yellow(`\n📊 검색 모드: ${modeDescription}`));
         console.log(chalk.yellow(`📊 예상 시도 횟수: ${estimatedAttempts.toLocaleString()}`));
         console.log(chalk.yellow(`⏱️  예상 소요 시간: ${this.getEstimatedTime(estimatedAttempts)} (하드웨어에 따라 차이가 있을 수 있습니다)\n`));
 
@@ -185,7 +274,25 @@ class VanityWalletGenerator {
         try {
             let wallet;
             
-            if (searchMode === 'contains') {
+            if (searchMode === 'startEnd') {
+                // 앞뒤 패턴 검색
+                if (options.useMultiCore) {
+                    wallet = await generateVanityWalletStartEndMultiWorker(
+                        startPattern,
+                        endPattern,
+                        null, // 기본 워커 수 사용
+                        options.caseSensitive,
+                        progressCallback
+                    );
+                } else {
+                    wallet = generateVanityWalletStartEnd(
+                        startPattern,
+                        endPattern,
+                        options.caseSensitive,
+                        progressCallback
+                    );
+                }
+            } else if (searchMode === 'contains') {
                 // 포함 패턴 검색
                 if (options.useMultiCore) {
                     wallet = await generateVanityWalletContainsMultiWorker(
@@ -225,27 +332,58 @@ class VanityWalletGenerator {
             // 결과 표시
             console.log(chalk.green('\n🎉 성공! 원하는 패턴의 지갑을 찾았습니다!\n'));
             
-            this.displayWalletInfo(wallet, pattern, totalTime, searchMode);
-
-            // 자동으로 파일에 저장
-            await this.saveWalletToFile(wallet, pattern, totalTime, searchMode);
+            if (searchMode === 'startEnd') {
+                const hasStartPattern = startPattern && startPattern.length > 0;
+                const hasEndPattern = endPattern && endPattern.length > 0;
+                
+                const displayPattern = hasStartPattern && hasEndPattern 
+                    ? `${startPattern}...${endPattern}`
+                    : hasStartPattern 
+                        ? startPattern
+                        : `...${endPattern}`;
+                
+                this.displayWalletInfo(wallet, displayPattern, totalTime, searchMode, startPattern, endPattern);
+                await this.saveWalletToFile(wallet, displayPattern, totalTime, searchMode, startPattern, endPattern);
+            } else {
+                this.displayWalletInfo(wallet, pattern, totalTime, searchMode);
+                await this.saveWalletToFile(wallet, pattern, totalTime, searchMode);
+            }
 
         } catch (error) {
             console.error(chalk.red('❌ 오류가 발생했습니다:'), error.message);
         }
     }
 
-    displayWalletInfo(wallet, pattern, generationTime = null, searchMode = 'startsWith') {
+    displayWalletInfo(wallet, pattern, generationTime = null, searchMode = 'startsWith', startPattern = null, endPattern = null) {
         console.log(chalk.green('\n🎉 성공! 원하는 패턴의 지갑을 찾았습니다!\n'));
         
         // 패턴 하이라이트
         let highlightedAddress = wallet.address;
-        if (searchMode === 'contains') {
-            const patternIndex = wallet.address.toLowerCase().indexOf(pattern.toLowerCase());
+        if (searchMode === 'startEnd') {
+            const hasStartPattern = startPattern && startPattern.length > 0;
+            const hasEndPattern = endPattern && endPattern.length > 0;
+            
+            if (hasStartPattern && hasEndPattern) {
+                const start = wallet.address.substring(0, startPattern.length);
+                const middle = wallet.address.substring(startPattern.length, wallet.address.length - endPattern.length);
+                const end = wallet.address.substring(wallet.address.length - endPattern.length);
+                highlightedAddress = chalk.bgYellow.black(start) + middle + chalk.bgYellow.black(end);
+            } else if (hasStartPattern) {
+                const start = wallet.address.substring(0, startPattern.length);
+                const rest = wallet.address.substring(startPattern.length);
+                highlightedAddress = chalk.bgYellow.black(start) + rest;
+            } else if (hasEndPattern) {
+                const start = wallet.address.substring(0, wallet.address.length - endPattern.length);
+                const end = wallet.address.substring(wallet.address.length - endPattern.length);
+                highlightedAddress = start + chalk.bgYellow.black(end);
+            }
+        } else if (searchMode === 'contains') {
+            const cleanPattern = pattern.replace('...', ''); // 앞뒤 패턴에서 ... 제거
+            const patternIndex = wallet.address.toLowerCase().indexOf(cleanPattern.toLowerCase());
             if (patternIndex !== -1) {
                 const before = wallet.address.substring(0, patternIndex);
-                const match = wallet.address.substring(patternIndex, patternIndex + pattern.length);
-                const after = wallet.address.substring(patternIndex + pattern.length);
+                const match = wallet.address.substring(patternIndex, patternIndex + cleanPattern.length);
+                const after = wallet.address.substring(patternIndex + cleanPattern.length);
                 highlightedAddress = before + chalk.bgYellow.black(match) + after;
             }
         } else {
@@ -278,18 +416,61 @@ class VanityWalletGenerator {
         console.log(chalk.red('   • 이 정보를 스크린샷으로 찍지 마세요\n'));
     }
 
-    async saveWalletToFile(wallet, pattern, generationTime = null, searchMode = 'startsWith') {
+    async saveWalletToFile(wallet, pattern, generationTime = null, searchMode = 'startsWith', startPattern = null, endPattern = null) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const modePrefix = searchMode === 'contains' ? 'contains' : 'starts';
-        const filename = `solana-wallet-${modePrefix}-${pattern}-${timestamp}.json`;
+        let modePrefix, filePattern;
+        
+        if (searchMode === 'startEnd') {
+            const hasStartPattern = startPattern && startPattern.length > 0;
+            const hasEndPattern = endPattern && endPattern.length > 0;
+            
+            if (hasStartPattern && hasEndPattern) {
+                modePrefix = 'startEnd';
+                filePattern = `${startPattern}-${endPattern}`;
+            } else if (hasStartPattern) {
+                modePrefix = 'starts';
+                filePattern = startPattern;
+            } else {
+                modePrefix = 'ends';
+                filePattern = endPattern;
+            }
+        } else if (searchMode === 'contains') {
+            modePrefix = 'contains';
+            filePattern = pattern;
+        } else {
+            modePrefix = 'starts';
+            filePattern = pattern;
+        }
+        
+        const filename = `solana-wallet-${modePrefix}-${filePattern}-${timestamp}.json`;
+        
+        let searchModeDescription;
+        if (searchMode === 'startEnd') {
+            const hasStartPattern = startPattern && startPattern.length > 0;
+            const hasEndPattern = endPattern && endPattern.length > 0;
+            
+            if (hasStartPattern && hasEndPattern) {
+                searchModeDescription = `앞뒤 패턴 (${startPattern}로 시작, ${endPattern}로 끝남)`;
+            } else if (hasStartPattern) {
+                searchModeDescription = `시작 패턴 (${startPattern}로 시작)`;
+            } else {
+                searchModeDescription = `끝 패턴 (${endPattern}로 끝남)`;
+            }
+        } else if (searchMode === 'contains') {
+            searchModeDescription = '주소 내 포함';
+        } else {
+            searchModeDescription = '주소 시작';
+        }
         
         const walletData = {
             address: wallet.address,
             privateKey: wallet.privateKey,
             publicKey: wallet.publicKey,
             pattern: pattern,
+            startPattern: startPattern,
+            endPattern: endPattern,
             searchMode: searchMode,
-            searchModeDescription: searchMode === 'contains' ? '주소 내 포함' : '주소 시작',
+            searchModeDescription: searchModeDescription,
             individualWorkerAttempts: wallet.attempts || 0,
             totalAttempts: wallet.totalAttempts || wallet.attempts || 0,
             generationTime: generationTime ? `${generationTime.toFixed(2)}초` : null,
